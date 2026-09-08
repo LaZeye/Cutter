@@ -1,11 +1,185 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="dark">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cutter</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cutter</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <link href="{{ url_for('static', filename='vendor/bootstrap.min.css') }}" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-    <h1></h1>Cutter</h1>
+
+<div class="shell">
+
+  <header class="masthead">
+    <h1>Cutter</h1>
+    <p class="masthead-sub">Morning weigh-ins, smoothed into a trend you can act on.</p>
+  </header>
+
+  <p class="banner" id="banner" hidden role="alert"></p>
+
+  <!-- Countdown tick strip: one mark per day of camp -->
+  <section class="camp" id="camp-strip" hidden>
+    <div class="camp-head">
+      <span class="camp-count" id="camp-days">—</span>
+      <span class="camp-label" id="camp-label">days to fight night</span>
+    </div>
+    <div class="ticks" id="ticks" aria-hidden="true"></div>
+  </section>
+
+  <main class="layout">
+
+    <!-- Left rail: readout, weigh-in entry, camp settings -->
+    <div class="rail">
+
+      <section class="readout" id="readout">
+        <div class="readout-empty" id="readout-empty">
+          <p>No weigh-ins yet. Add this morning's number to start the trend.</p>
+        </div>
+
+        <div class="readout-body" id="readout-body" hidden>
+          <div class="scale">
+            <span class="scale-value" id="trend-weight">—</span>
+            <span class="scale-unit" id="trend-unit">lb</span>
+          </div>
+          <p class="scale-caption">
+            Trend weight. Scale read <span id="raw-weight">—</span> on <span id="raw-date">—</span>.
+          </p>
+
+          <div class="bar-track" id="bar-track">
+            <div class="bar-fill" id="bar-fill"></div>
+          </div>
+          <p class="bar-caption" id="to-target">—</p>
+
+          <dl class="figures">
+            <div>
+              <dt>Past 7 days</dt>
+              <dd id="seven-day">—</dd>
+            </div>
+            <div>
+              <dt>Current rate</dt>
+              <dd id="weekly-rate">—</dd>
+            </div>
+            <div>
+              <dt>Rate needed</dt>
+              <dd id="required-rate">—</dd>
+            </div>
+            <div>
+              <dt>Projected on fight day</dt>
+              <dd id="projected">—</dd>
+            </div>
+          </dl>
+
+          <p class="verdict" id="verdict" hidden></p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Log a weigh-in</h2>
+        <form id="entry-form" class="stack" autocomplete="off">
+          <div>
+            <label for="entry-date" class="form-label">Date</label>
+            <input type="date" id="entry-date" class="form-control" required>
+          </div>
+          <div>
+            <label for="entry-weight" class="form-label">Weight</label>
+            <input type="number" id="entry-weight" class="form-control"
+                   step="0.1" min="40" max="700" placeholder="0.0" required>
+          </div>
+          <div>
+            <label for="entry-note" class="form-label">Note <span class="optional">optional</span></label>
+            <input type="text" id="entry-note" class="form-control"
+                   maxlength="120" placeholder="Travel day, heavy session, poor sleep">
+          </div>
+          <button type="submit" class="btn btn-brass">Save weigh-in</button>
+          <p class="form-msg" id="entry-msg" role="status"></p>
+        </form>
+        <p class="hint">Saving twice for the same date overwrites the earlier number.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Camp settings</h2>
+        <form id="settings-form" class="stack" autocomplete="off">
+          <div>
+            <label for="target-weight" class="form-label">Target weight</label>
+            <input type="number" id="target-weight" class="form-control" step="0.1" min="0">
+          </div>
+          <div>
+            <label for="fight-date" class="form-label">Fight date</label>
+            <input type="date" id="fight-date" class="form-control">
+          </div>
+          <div>
+            <label for="camp-start" class="form-label">Camp start</label>
+            <input type="date" id="camp-start" class="form-control">
+          </div>
+          <button type="submit" class="btn btn-outline-bone">Save settings</button>
+          <p class="form-msg" id="settings-msg" role="status"></p>
+        </form>
+      </section>
+
+    </div>
+
+    <!-- Right column: charts and the log -->
+    <div class="main">
+
+      <section class="panel chart-panel">
+        <div class="panel-head">
+          <h2>Weight and trend</h2>
+          <div class="smoothing">
+            <label for="alpha">Smoothing</label>
+            <input type="range" id="alpha" class="form-range"
+                   min="0.02" max="0.40" step="0.01" value="0.10">
+            <output id="alpha-out">0.10</output>
+          </div>
+        </div>
+        <div class="chart-holder">
+          <canvas id="chart-weight"></canvas>
+        </div>
+        <p class="legend">
+          <span class="key key-raw"></span> daily readings
+          <span class="key key-trend"></span> trend
+          <span class="key key-proj"></span> projection
+          <span class="key key-target"></span> target
+        </p>
+      </section>
+
+      <section class="panel chart-panel">
+        <h2>Change by week</h2>
+        <div class="chart-holder chart-holder-short">
+          <canvas id="chart-weekly"></canvas>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Weigh-in log</h2>
+        <div class="table-wrap">
+          <table class="table log-table align-middle">
+            <thead>
+              <tr>
+                <th scope="col">Date</th>
+                <th scope="col">Scale</th>
+                <th scope="col">Trend</th>
+                <th scope="col">Note</th>
+                <th scope="col"><span class="visually-hidden">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody id="log-body"></tbody>
+          </table>
+        </div>
+        <p class="hint" id="log-empty">Nothing logged yet.</p>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/chartjs-adapter-date-fns.bundle.min.js') }}"></script>
+<script src="{{ url_for('static', filename='scripts.js') }}"></script>
 </body>
 </html>
