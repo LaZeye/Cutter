@@ -1,13 +1,16 @@
-"""Seed Cutter with six months of plausible weigh-in history.
+"""Seed Cutter with fifteen months of weigh-ins across several camps.
 
-One-off developer utility. Generates a realistic cut from ~200 lb with the
-texture real scale data has: weekend water retention, plateau stretches,
-travel bumps, missed days and daily noise.
+One-off developer utility. Builds a fighter's history from June 2025 to
+September 2026: 225 lb down to 178, with three six-week camps at 205, 190 and
+182, and the weight rebound that follows each one.
 
-    python seed_data.py                 # seed, keeping existing rows
-    python seed_data.py --clear         # wipe entries first
-    python seed_data.py --days 120      # different span
-    python seed_data.py --seed 42       # reproducible output
+    python seed_data.py --clear
+    python seed_data.py --clear --seed 42      # reproducible
+    python seed_data.py --clear --no-active    # no camp currently running
+
+Weigh-ins land in the general log regardless of whether a camp was running.
+Camps are stored as named date ranges, so camp views are derived by filtering
+that one log rather than keeping a second copy of the same numbers.
 """
 
 import argparse
@@ -17,125 +20,175 @@ from datetime import date, timedelta
 
 from modules import db
 
-# Weekly rate of loss for each phase of camp, as a fraction of the span.
-# Slow start, steady middle, sharper as fight week approaches.
-PHASES = [
-    (0.00, 0.20, 0.55),   # settling in
-    (0.20, 0.55, 1.10),   # main block
-    (0.55, 0.80, 0.90),   # plateau-prone stretch
-    (0.80, 1.00, 1.45),   # sharpening up
+# Each leg of the fifteen months: dates, the weight at each end, and whether
+# it is a camp (named, with a target) or ordinary living between camps.
+#
+# kind: 'camp' shapes the loss like a real cut — slow first week, hardest in
+# the middle, sharpening at the end. 'drift' and 'rebound' move linearly with
+# looser logging discipline.
+LEGS = [
+    ("drift",   "2025-06-01", "2025-07-20", 225.0, 218.0, None),
+    ("camp",    "2025-07-21", "2025-09-01", 218.0, 204.0, {
+        "name": "NAGA Houston", "target": 205.0}),
+    ("rebound", "2025-09-02", "2025-10-19", 204.0, 214.0, None),
+    ("drift",   "2025-10-20", "2026-01-04", 214.0, 202.0, None),
+    ("camp",    "2026-01-05", "2026-02-16", 202.0, 189.0, {
+        "name": "Fury FC 88", "target": 190.0}),
+    ("rebound", "2026-02-17", "2026-03-29", 189.0, 199.0, None),
+    ("drift",   "2026-03-30", "2026-05-03", 199.0, 194.0, None),
+    ("camp",    "2026-05-04", "2026-06-15", 194.0, 181.5, {
+        "name": "Legacy FC Dallas", "target": 182.0}),
+    ("rebound", "2026-06-16", "2026-07-19", 181.5, 189.0, None),
+    ("drift",   "2026-07-20", "2026-09-08", 189.0, 178.0, None),
 ]
+
+# A camp still running as of the last weigh-in, so both dashboard views have
+# something to show. Skip it with --no-active.
+ACTIVE_CAMP = {
+    "name": "Grappling Industries Houston",
+    "start_date": "2026-08-04",
+    "fight_date": "2026-10-10",
+    "target_weight": 170.0,
+}
+
+# Shape of a camp's loss across its length: fraction of the way through
+# mapped to a relative rate. Normalised later so the leg lands where it should.
+CAMP_SHAPE = [(0.00, 0.65), (0.20, 1.15), (0.55, 0.95), (0.80, 1.40)]
 
 NOTES = [
-    (0.03, "Travel — ate out all weekend"),
-    (0.03, "Slept badly"),
-    (0.02, "Hard sparring session"),
-    (0.02, "Rest day"),
-    (0.02, "Salty dinner"),
-    (0.02, "Long run, felt light"),
-    (0.02, "Sick, appetite off"),
+    (0.030, "Travel — ate out all weekend"),
+    (0.030, "Slept badly"),
+    (0.025, "Hard sparring session"),
+    (0.020, "Rest day"),
+    (0.020, "Salty dinner"),
+    (0.020, "Long run, felt light"),
+    (0.015, "Sick, appetite off"),
 ]
 
 
-def weekly_rate(progress):
-    for start, end, rate in PHASES:
-        if start <= progress < end:
-            return rate
-    return PHASES[-1][2]
+def camp_rate(progress):
+    rate = CAMP_SHAPE[0][1]
+    for at, value in CAMP_SHAPE:
+        if progress >= at:
+            rate = value
+    return rate
 
 
-def generate(days, start_weight, end_weight, rng):
-    """Build a list of (date, weight, note) tuples, oldest first."""
-    today = date.today()
-    first_day = today - timedelta(days=days - 1)
+def leg_schedule(kind, days, change, rng):
+    """Per-day weight movement for one leg, summing exactly to `change`.
 
-    # Scale the phase rates so the run actually lands near end_weight.
-    raw_total = sum(
-        weekly_rate(i / days) / 7.0 for i in range(days)
-    )
-    wanted_total = start_weight - end_weight
-    scale = wanted_total / raw_total if raw_total else 1.0
+    Plateaus have to be decided before the normalising, not after: damping a
+    day's movement once the scale factor is fixed makes the leg undershoot.
+    """
+    shape = []
+    plateau = 0
 
+    for i in range(days):
+        progress = i / days if days else 0
+        rate = camp_rate(progress) if kind == "camp" else 1.0
+
+        if plateau > 0:
+            rate *= 0.15
+            plateau -= 1
+        elif kind != "rebound" and rng.random() < 0.025:
+            plateau = rng.randint(4, 9)
+
+        shape.append(rate)
+
+    total = sum(shape)
+    scale = change / total if total else 0.0
+    return [s * scale for s in shape]
+
+
+def generate(rng):
+    """Build (date, weight, note) tuples across every leg, oldest first."""
     entries = []
-    true_weight = start_weight
-
-    plateau_days = 0
     bump_days = 0
     bump_size = 0.0
 
-    for i in range(days):
-        day = first_day + timedelta(days=i)
-        progress = i / days
+    for kind, start_iso, end_iso, start_w, end_w, _camp in LEGS:
+        start = date.fromisoformat(start_iso)
+        end = date.fromisoformat(end_iso)
+        days = (end - start).days + 1
 
-        # --- underlying trend movement ---
-        daily_loss = (weekly_rate(progress) / 7.0) * scale
+        schedule = leg_schedule(kind, days, start_w - end_w, rng)
+        weight = start_w
 
-        # Plateaus: a few stretches where the scale simply stops moving.
-        if plateau_days > 0:
-            daily_loss *= 0.12
-            plateau_days -= 1
-        elif rng.random() < 0.012:
-            plateau_days = rng.randint(5, 11)
+        # Logging discipline is much better inside a camp.
+        skip_weekday = 0.06 if kind == "camp" else 0.20
+        skip_weekend = 0.16 if kind == "camp" else 0.38
 
-        true_weight -= daily_loss
+        for i in range(days):
+            day = start + timedelta(days=i)
+            weight -= schedule[i]
 
-        # --- transient water weight ---
-        # Travel or a heavy weekend puts a few pounds on for several days.
-        if bump_days > 0:
-            bump_days -= 1
-        elif rng.random() < 0.020:
-            bump_days = rng.randint(2, 5)
-            bump_size = rng.uniform(1.6, 3.8)
+            # Transient water weight from travel or a heavy weekend.
+            if bump_days > 0:
+                bump_days -= 1
+            elif rng.random() < (0.030 if kind == "camp" else 0.050):
+                bump_days = rng.randint(2, 5)
+                bump_size = rng.uniform(1.5, 3.6)
 
-        bump = bump_size * (bump_days / 5.0) if bump_days > 0 else 0.0
+            bump = bump_size * (bump_days / 5.0) if bump_days > 0 else 0.0
 
-        # Weekends read heavier: more sodium, more carbs, later meals.
-        weekend = 0.9 if day.weekday() >= 5 else 0.0
+            # Weekends read heavier: more sodium, more carbs, later meals.
+            weekend = 0.9 if day.weekday() >= 5 else 0.0
+            noise = rng.gauss(0, 0.7)
 
-        # Ordinary day-to-day scale noise.
-        noise = rng.gauss(0, 0.65)
+            reading = round(weight + bump + weekend + noise, 1)
 
-        reading = round(true_weight + bump + weekend + noise, 1)
+            skip = skip_weekend if day.weekday() >= 5 else skip_weekday
+            if rng.random() < skip:
+                continue
 
-        # --- missed weigh-ins ---
-        # Skip more often on weekends, and occasionally a whole trip.
-        skip_chance = 0.22 if day.weekday() >= 5 else 0.08
-        if rng.random() < skip_chance:
-            continue
+            note = None
+            for chance, text in NOTES:
+                if rng.random() < chance:
+                    note = text
+                    break
 
-        note = None
-        for chance, text in NOTES:
-            if rng.random() < chance:
-                note = text
-                break
-
-        entries.append((day.isoformat(), reading, note))
+            entries.append((day.isoformat(), reading, note))
 
     return entries
 
 
+def camp_rows():
+    """Completed camps, taken straight from the leg definitions."""
+    rows = []
+    for kind, start_iso, end_iso, _sw, _ew, camp in LEGS:
+        if kind != "camp":
+            continue
+        rows.append({
+            "name": camp["name"],
+            "start_date": start_iso,
+            "fight_date": end_iso,
+            "target_weight": camp["target"],
+            "ended_on": end_iso,
+        })
+    return rows
+
+
 def main():
     parser = argparse.ArgumentParser(description="Seed Cutter with sample history.")
-    parser.add_argument("--days", type=int, default=182, help="days of history (default 182)")
-    parser.add_argument("--start", type=float, default=200.0, help="starting weight")
-    parser.add_argument("--end", type=float, default=172.0, help="approximate weight today")
-    parser.add_argument("--clear", action="store_true", help="delete existing entries first")
+    parser.add_argument("--clear", action="store_true",
+                        help="delete existing weigh-ins and camps first")
+    parser.add_argument("--no-active", action="store_true",
+                        help="don't leave a camp running")
     parser.add_argument("--seed", type=int, help="random seed for reproducible data")
     args = parser.parse_args()
 
-    if args.end >= args.start:
-        sys.exit("End weight must be below start weight.")
-
     rng = random.Random(args.seed)
-
     db.init_db()
 
     if args.clear:
         with db.get_connection() as conn:
-            removed = conn.execute("DELETE FROM entries").rowcount
-        print(f"Cleared {removed} existing entries.")
+            gone_entries = conn.execute("DELETE FROM entries").rowcount
+            gone_camps = conn.execute("DELETE FROM camps").rowcount
+        print(f"Cleared {gone_entries} weigh-ins and {gone_camps} camps.")
 
-    entries = generate(args.days, args.start, args.end, rng)
+    entries = generate(rng)
+    if not entries:
+        sys.exit("Generated no entries.")
 
     with db.get_connection() as conn:
         conn.executemany(
@@ -148,10 +201,37 @@ def main():
             entries,
         )
 
-    print(f"Inserted {len(entries)} weigh-ins across {args.days} days "
-          f"({len(entries) / args.days:.0%} of days logged).")
-    print(f"First: {entries[0][0]} at {entries[0][1]} lb")
-    print(f"Last:  {entries[-1][0]} at {entries[-1][1]} lb")
+        for row in camp_rows():
+            conn.execute(
+                """
+                INSERT INTO camps (name, start_date, fight_date, target_weight, ended_on)
+                VALUES (:name, :start_date, :fight_date, :target_weight, :ended_on)
+                """,
+                row,
+            )
+
+        if not args.no_active:
+            conn.execute(
+                """
+                INSERT INTO camps (name, start_date, fight_date, target_weight)
+                VALUES (:name, :start_date, :fight_date, :target_weight)
+                """,
+                ACTIVE_CAMP,
+            )
+
+    span_days = (date.fromisoformat(entries[-1][0]) - date.fromisoformat(entries[0][0])).days + 1
+
+    print(f"Inserted {len(entries)} weigh-ins across {span_days} days "
+          f"({len(entries) / span_days:.0%} of days logged).")
+    print(f"  {entries[0][0]} at {entries[0][1]} lb  →  {entries[-1][0]} at {entries[-1][1]} lb")
+    print()
+    print("Camps:")
+    for row in camp_rows():
+        print(f"  {row['name']:<28} {row['start_date']} → {row['ended_on']}  target {row['target_weight']:.0f} lb")
+    if not args.no_active:
+        print(f"  {ACTIVE_CAMP['name']:<28} {ACTIVE_CAMP['start_date']} → "
+              f"{ACTIVE_CAMP['fight_date']}  target {ACTIVE_CAMP['target_weight']:.0f} lb  (running)")
+    print()
     print(f"Database: {db.DB_PATH}")
 
 
