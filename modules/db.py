@@ -42,7 +42,6 @@ CREATE TABLE IF NOT EXISTS settings (
 """
 
 DEFAULT_SETTINGS = {
-    "alpha": "0.10",
     "unit": "lb",
 }
 
@@ -76,6 +75,15 @@ def list_entries():
             "SELECT date, weight, note FROM entries ORDER BY date ASC"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_entry(entry_date):
+    """The weigh-in saved for a date, if there is one."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT date, weight, note FROM entries WHERE date = ?", (entry_date,)
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def upsert_entry(entry_date, weight, note=None):

@@ -22,7 +22,8 @@
       <p class="masthead-sub">Morning weigh-ins, smoothed into a trend you can act on.</p>
     </div>
     <div class="masthead-actions">
-      <button type="button" class="btn btn-brass" id="start-camp" hidden>Start camp</button>
+      <button type="button" class="btn btn-brass" id="open-weigh-in">Weigh in</button>
+      <button type="button" class="btn btn-outline-bone" id="start-camp" hidden>Start camp</button>
       <button type="button" class="btn btn-outline-bone" id="end-camp" hidden>End camp</button>
     </div>
   </header>
@@ -41,7 +42,7 @@
 
   <main class="layout">
 
-    <!-- Left rail: readout and weigh-in entry -->
+    <!-- Left rail: the readout -->
     <div class="rail">
 
       <section class="readout" id="readout">
@@ -54,9 +55,6 @@
             <span class="scale-value" id="trend-weight">—</span>
             <span class="scale-unit" id="trend-unit">lb</span>
           </div>
-          <p class="scale-caption">
-            Trend weight. Scale read <span id="raw-weight">—</span> on <span id="raw-date">—</span>.
-          </p>
 
           <!-- Camp-only block -->
           <div id="camp-readout" hidden>
@@ -73,30 +71,6 @@
         </div>
       </section>
 
-      <section class="panel">
-        <h2>Log a weigh-in</h2>
-        <form id="entry-form" class="stack" autocomplete="off">
-          <div>
-            <label for="entry-date" class="form-label">Date</label>
-            <input type="date" id="entry-date" class="form-control" required>
-          </div>
-          <div>
-            <label for="entry-weight" class="form-label">Weight</label>
-            <input type="number" id="entry-weight" class="form-control"
-                   step="0.1" min="40" max="700" placeholder="0.0" required>
-          </div>
-          <div>
-            <label for="entry-note" class="form-label">Note <span class="optional">optional</span></label>
-            <input type="text" id="entry-note" class="form-control"
-                   maxlength="120" placeholder="Travel day, heavy session, poor sleep">
-          </div>
-          <button type="submit" class="btn btn-brass">Save weigh-in</button>
-          <p class="form-msg" id="entry-msg" role="status"></p>
-        </form>
-        <p class="hint">Weigh-ins are always kept, camp or no camp. Saving twice for
-          the same date overwrites the earlier number.</p>
-      </section>
-
     </div>
 
     <!-- Right column -->
@@ -109,15 +83,7 @@
             <h2 id="camp-name">Camp</h2>
             <p class="window-note" id="camp-window"></p>
           </div>
-          <div class="panel-tools">
-            <button type="button" class="link-btn" id="edit-camp">Edit</button>
-            <div class="smoothing">
-              <label for="alpha">Smoothing</label>
-              <input type="range" id="alpha" class="form-range"
-                     min="0.02" max="0.40" step="0.01" value="0.10">
-              <output id="alpha-out">0.10</output>
-            </div>
-          </div>
+          <button type="button" class="link-btn" id="edit-camp">Edit</button>
         </div>
         <div class="chart-holder">
           <canvas id="chart-camp"></canvas>
@@ -128,7 +94,7 @@
           <span class="key key-trend"></span> trend
           <span class="key key-plan"></span> plan
           <span class="key key-proj"></span> projection
-          <span class="key key-target"></span> target
+          <span class="key key-target"></span> start and target
         </p>
         <p class="hint" id="tolerance-note"></p>
       </section>
@@ -182,8 +148,7 @@
             <thead>
               <tr>
                 <th scope="col">Date</th>
-                <th scope="col">Scale</th>
-                <th scope="col">Trend</th>
+                <th scope="col">Weight</th>
                 <th scope="col">Note</th>
                 <th scope="col"><span class="visually-hidden">Actions</span></th>
               </tr>
@@ -197,6 +162,41 @@
     </div>
   </main>
 </div>
+
+<!-- Log a weigh-in -->
+<dialog class="sheet" id="weigh-dialog" aria-labelledby="weigh-title">
+  <form id="entry-form" autocomplete="off">
+    <div class="sheet-head">
+      <h2 id="weigh-title">Weigh in</h2>
+      <button type="button" class="sheet-close" data-close="weigh-dialog" aria-label="Close">&times;</button>
+    </div>
+
+    <div class="sheet-body stack">
+      <div>
+        <label for="entry-date" class="form-label">Date</label>
+        <input type="date" id="entry-date" class="form-control" required>
+      </div>
+      <div>
+        <label for="entry-weight" class="form-label">Weight</label>
+        <input type="number" id="entry-weight" class="form-control"
+               step="0.1" min="40" max="700" placeholder="0.0" required>
+      </div>
+      <div>
+        <label for="entry-note" class="form-label">Note <span class="optional">optional</span></label>
+        <input type="text" id="entry-note" class="form-control"
+               maxlength="120" placeholder="Travel day, heavy session, poor sleep">
+      </div>
+
+      <p class="confirm-note" id="entry-confirm" hidden></p>
+      <p class="form-msg" id="entry-msg" role="status"></p>
+    </div>
+
+    <div class="sheet-foot">
+      <button type="button" class="btn btn-outline-bone" data-close="weigh-dialog">Cancel</button>
+      <button type="submit" class="btn btn-brass" id="entry-save">Save weigh-in</button>
+    </div>
+  </form>
+</dialog>
 
 <!-- Start / edit a camp -->
 <dialog class="sheet" id="camp-dialog" aria-labelledby="camp-dialog-title">
@@ -250,13 +250,14 @@
         <label for="end-form-date" class="form-label">Ended on</label>
         <input type="date" id="end-form-date" class="form-control" required>
       </div>
+      <p class="confirm-note" id="end-warning" hidden></p>
       <p class="hint">Defaults to today. Set it back if the fight has already passed.</p>
       <p class="form-msg" id="end-form-msg" role="status"></p>
     </div>
 
     <div class="sheet-foot">
       <button type="button" class="btn btn-outline-bone" data-close="end-dialog">Cancel</button>
-      <button type="submit" class="btn btn-brass">End camp</button>
+      <button type="submit" class="btn btn-brass" id="end-save">End camp</button>
     </div>
   </form>
 </dialog>

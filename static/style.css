@@ -293,11 +293,16 @@ body {
   color: var(--muted);
 }
 
-.scale-caption {
-  color: var(--muted);
+.confirm-note {
+  background: var(--raised);
+  border-left: 3px solid var(--brass);
+  border-radius: 2px;
+  padding: var(--sp-2);
+  margin: 0;
   font-size: 0.875rem;
-  margin: var(--sp-1) 0 var(--sp-3);
 }
+
+.scale { margin-bottom: var(--sp-3); }
 
 .bar-track {
   height: 6px;
@@ -406,22 +411,38 @@ body {
   font-size: 1.6rem;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
-  margin-top: var(--sp-1);
+  line-height: 1.1;
 }
 
-.tile-sub {
-  color: var(--muted);
-  font-size: 0.8125rem;
-  font-variant-numeric: tabular-nums;
+.tile-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-top: var(--sp-1);
 }
 
 .tile-badge {
-  align-self: flex-start;
   font-size: 0.6875rem;
   border: 1px solid currentColor;
   border-radius: 2px;
-  padding: 0 5px;
-  margin-top: var(--sp-1);
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.tile-badge.made {
+  color: var(--good);
+  background: rgba(95, 163, 119, 0.16);
+}
+
+.tile-badge.missed {
+  color: var(--clay);
+  background: rgba(181, 84, 74, 0.16);
+}
+
+.tile-badge.running {
+  color: var(--brass);
+  background: rgba(201, 146, 46, 0.16);
 }
 
 /* --- forms --- */
@@ -561,24 +582,6 @@ body {
 }
 
 #detail-figures { margin-top: var(--sp-2); grid-template-columns: repeat(3, 1fr); }
-
-/* --- smoothing slider --- */
-
-.smoothing {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  font-size: 0.8125rem;
-  color: var(--muted);
-}
-
-.smoothing .form-range { width: 120px; }
-
-.smoothing output {
-  font-variant-numeric: tabular-nums;
-  color: var(--bone);
-  min-width: 2.6em;
-}
 
 /* --- charts --- */
 

@@ -20,6 +20,9 @@ const STATUS = {
   behind:   { color: COLORS.clay,  label: "Behind plan",   css: "behind" },
 };
 
+// Headroom above the camp-start rail and below the target rail.
+const RAIL_PADDING = 3;
+
 const charts = { camp: null, overall: null, detail: null };
 
 let unit = "lb";
@@ -30,6 +33,7 @@ let editingCampId = null;
 let detailCampId = null;
 let endingCampId = null;
 let latestActive = null;
+let pendingOverwrite = false;
 
 const $ = (id) => document.getElementById(id);
 
@@ -256,7 +260,7 @@ async function loadData() {
   let data;
 
   try {
-    const res = await fetch(`/api/data?alpha=${$("alpha").value}&range=${currentRange}`);
+    const res = await fetch(`/api/data?range=${currentRange}`);
     if (!res.ok) {
       showBanner(`The server returned ${res.status} loading your data.`);
       return;
@@ -284,7 +288,7 @@ async function loadData() {
   renderTiles(data.camps);
   renderRanges(data.overall);
   renderToleranceNote(data.tolerance);
-  renderLog(data.entries, data.overall.trend, data.active_camp);
+  renderLog(data.entries);
 
   if (!chartsAvailable) {
     showBanner("Charts are unavailable because Chart.js did not load. Your data is intact.");
@@ -390,9 +394,6 @@ function renderReadout(active, overall) {
 
   $("trend-weight").textContent = fixed(overall.trend_weight);
   $("trend-unit").textContent = unit;
-  $("raw-weight").textContent = withUnit(overall.latest_scale);
-  $("raw-date").textContent = dayLabel(overall.latest_date);
-
   $("camp-readout").hidden = !active;
 
   const rows = [];
@@ -522,15 +523,32 @@ function renderCampChart(active) {
     });
   }
 
-  datasets.push({
-    label: "Target",
-    data: [{ x: win.start, y: stats.target_weight }, { x: win.end, y: stats.target_weight }],
-    borderColor: COLORS.clay,
-    borderWidth: 1.5,
-    borderDash: [2, 3],
-    pointRadius: 0,
-    order: 5,
+  // Two rails bound the cut: the camp-start weight on top, the target below.
+  // The axis is padded just beyond each so the band sits inside the frame
+  // without flattening the trend line against it.
+  const ceiling = stats.start_weight !== null ? stats.start_weight : stats.target_weight;
+
+  [["Target", stats.target_weight], ["Camp start", ceiling]].forEach(([label, y], i) => {
+    datasets.push({
+      label,
+      data: [{ x: win.start, y }, { x: win.end, y }],
+      borderColor: COLORS.clay,
+      borderWidth: 1.5,
+      borderDash: [2, 3],
+      pointRadius: 0,
+      order: 5 + i,
+    });
   });
+
+  // Never let the padding crop real data.
+  const seen = [];
+  active.entries.forEach(e => seen.push(e.weight));
+  active.trend.forEach(t => seen.push(t.trend));
+  active.plan.forEach(p => seen.push(p.value));
+  active.projection.forEach(p => seen.push(p.value));
+
+  const yMin = Math.min(stats.target_weight - RAIL_PADDING, ...(seen.length ? [Math.min(...seen) - 1] : []));
+  const yMax = Math.max(ceiling + RAIL_PADDING, ...(seen.length ? [Math.max(...seen) + 1] : []));
 
   charts.camp = new Chart($("chart-camp"), {
     type: "line",
@@ -547,7 +565,15 @@ function renderCampChart(active) {
         fightDayMarker: { date: camp.fight_date, color: COLORS.bone, label: "Fight day" },
         tooltip: { ...tooltipStyle, callbacks: { label: weeklyTooltip } },
       },
-      scales: { x: timeScale(win.start, win.end), y: { grid: gridStyle, ticks: { ...tickStyle, callback: v => v.toFixed(0) } } },
+      scales: {
+        x: timeScale(win.start, win.end),
+        y: {
+          min: yMin,
+          max: yMax,
+          grid: gridStyle,
+          ticks: { ...tickStyle, callback: v => v.toFixed(0) },
+        },
+      },
     },
   });
 }
@@ -619,18 +645,22 @@ function renderTiles(camps) {
     tile.addEventListener("click", () => openDetail(c.id));
 
     const end = c.ended_on || c.fight_date;
-    const badge = c.is_active
-      ? '<span class="tile-badge">Running</span>'
-      : (c.made_weight
-          ? '<span class="tile-badge">Made weight</span>'
-          : `<span class="tile-badge">Missed by ${fixed(c.to_target)}</span>`);
 
+    const badge = c.is_active
+      ? '<span class="tile-badge running">Running</span>'
+      : (c.made_weight
+          ? '<span class="tile-badge made">Made weight</span>'
+          : `<span class="tile-badge missed">Missed by ${fixed(c.to_target)}</span>`);
+
+    // The figure is the weight on the scale at fight time, which is the
+    // number that actually decided the outcome.
     tile.innerHTML = `
       <span class="tile-name">${escapeHtml(c.name)}</span>
       <span class="tile-dates">${dayLabel(c.start_date)} – ${dayLabel(end)} · ${c.weeks} weeks</span>
-      <span class="tile-figure">${signed(c.change)} ${unit}</span>
-      <span class="tile-sub">${fixed(c.start_weight)} → ${fixed(c.final_scale)} · target ${fixed(c.target_weight)}</span>
-      ${badge}
+      <span class="tile-row">
+        <span class="tile-figure">${fixed(c.final_scale)} ${unit}</span>
+        ${badge}
+      </span>
     `;
 
     wrap.appendChild(tile);
@@ -650,7 +680,7 @@ async function openDetail(campId) {
 
   let detail;
   try {
-    const res = await fetch(`/api/camps/${campId}?alpha=${$("alpha").value}`);
+    const res = await fetch(`/api/camps/${campId}`);
     if (!res.ok) { showBanner("Could not load that camp."); return; }
     detail = await res.json();
   } catch (err) {
@@ -712,15 +742,32 @@ async function openDetail(campId) {
       order: 4,
     });
   }
-  datasets.push({
-    label: "Target",
-    data: [{ x: win.start, y: stats.target_weight }, { x: win.end, y: stats.target_weight }],
-    borderColor: COLORS.clay,
-    borderWidth: 1.5,
-    borderDash: [2, 3],
-    pointRadius: 0,
-    order: 5,
+  // Two rails bound the cut: the camp-start weight on top, the target below.
+  // The axis is padded just beyond each so the band sits inside the frame
+  // without flattening the trend line against it.
+  const ceiling = stats.start_weight !== null ? stats.start_weight : stats.target_weight;
+
+  [["Target", stats.target_weight], ["Camp start", ceiling]].forEach(([label, y], i) => {
+    datasets.push({
+      label,
+      data: [{ x: win.start, y }, { x: win.end, y }],
+      borderColor: COLORS.clay,
+      borderWidth: 1.5,
+      borderDash: [2, 3],
+      pointRadius: 0,
+      order: 5 + i,
+    });
   });
+
+  // Never let the padding crop real data.
+  const seen = [];
+  active.entries.forEach(e => seen.push(e.weight));
+  active.trend.forEach(t => seen.push(t.trend));
+  active.plan.forEach(p => seen.push(p.value));
+  active.projection.forEach(p => seen.push(p.value));
+
+  const yMin = Math.min(stats.target_weight - RAIL_PADDING, ...(seen.length ? [Math.min(...seen) - 1] : []));
+  const yMax = Math.max(ceiling + RAIL_PADDING, ...(seen.length ? [Math.max(...seen) + 1] : []));
 
   charts.detail = new Chart($("chart-detail"), {
     type: "line",
@@ -747,7 +794,7 @@ async function openDetail(campId) {
 
 /* --- log ---------------------------------------------------------------- */
 
-function renderLog(entries, trend, active) {
+function renderLog(entries) {
   const body = $("log-body");
   const empty = $("log-empty");
 
@@ -759,8 +806,6 @@ function renderLog(entries, trend, active) {
   }
   empty.hidden = true;
 
-  const trendByDate = Object.fromEntries((trend || []).map(t => [t.date, t.trend]));
-
   // Only the most recent stretch is worth rendering as rows.
   [...entries].reverse().slice(0, 120).forEach((e) => {
     const tr = document.createElement("tr");
@@ -770,9 +815,6 @@ function renderLog(entries, trend, active) {
 
     const weightCell = document.createElement("td");
     weightCell.textContent = fixed(e.weight);
-
-    const trendCell = document.createElement("td");
-    trendCell.textContent = fixed(trendByDate[e.date]);
 
     const noteCell = document.createElement("td");
     noteCell.className = "log-note";
@@ -786,7 +828,7 @@ function renderLog(entries, trend, active) {
     btn.addEventListener("click", () => removeEntry(e.date));
     actionCell.appendChild(btn);
 
-    tr.append(dateCell, weightCell, trendCell, noteCell, actionCell);
+    tr.append(dateCell, weightCell, noteCell, actionCell);
     body.appendChild(tr);
   });
 }
@@ -803,6 +845,23 @@ async function removeEntry(entryDate) {
 
 /* --- forms -------------------------------------------------------------- */
 
+function openWeighIn() {
+  $("entry-date").value = todayISO();
+  $("entry-weight").value = "";
+  $("entry-note").value = "";
+  $("entry-msg").textContent = "";
+  resetOverwrite();
+
+  $("weigh-dialog").showModal();
+  $("entry-weight").focus();
+}
+
+function resetOverwrite() {
+  pendingOverwrite = false;
+  $("entry-confirm").hidden = true;
+  $("entry-save").textContent = "Save weigh-in";
+}
+
 async function submitEntry(ev) {
   ev.preventDefault();
   const msg = $("entry-msg");
@@ -815,19 +874,30 @@ async function submitEntry(ev) {
         date: $("entry-date").value,
         weight: $("entry-weight").value,
         note: $("entry-note").value,
+        overwrite: pendingOverwrite,
       }),
     });
 
     const data = await res.json();
 
     if (res.ok) {
-      flash(msg, "Weigh-in saved.");
-      $("entry-weight").value = "";
-      $("entry-note").value = "";
-      loadData();
-    } else {
-      flash(msg, data.error || "That didn't save.", false);
+      $("weigh-dialog").close();
+      return;
     }
+
+    // One weigh-in per day: a second reading for the same date asks first.
+    if (res.status === 409 && data.error === "duplicate") {
+      pendingOverwrite = true;
+      const found = data.existing;
+      const el = $("entry-confirm");
+      el.hidden = false;
+      el.textContent =
+        `${dayLabel(found.date)} already reads ${fixed(found.weight)} ${unit}. Save again to replace it.`;
+      $("entry-save").textContent = "Replace weigh-in";
+      return;
+    }
+
+    flash(msg, data.error || "That didn't save.", false);
   } catch (err) {
     console.error(err);
     flash(msg, "Could not reach the server.", false);
@@ -889,8 +959,27 @@ function openEndDialog(active) {
   $("end-dialog-body").textContent =
     `Close out ${active.camp.name} and move it to your history.`;
   $("end-form-date").value = todayISO();
+  updateEndWarning();
   $("end-dialog").showModal();
   $("end-form-date").focus();
+}
+
+function updateEndWarning() {
+  const el = $("end-warning");
+  const chosen = $("end-form-date").value;
+  const fight = latestActive ? latestActive.camp.fight_date : null;
+
+  // Closing before fight day means the camp never ran, so it is discarded
+  // rather than filed. Say so plainly before the button is pressed.
+  if (fight && chosen && chosen < fight) {
+    el.hidden = false;
+    el.textContent =
+      `That is before fight day on ${longLabel(fight)}, so this camp will be discarded instead of saved to your history. Your weigh-ins are kept.`;
+    $("end-save").textContent = "Discard camp";
+  } else {
+    el.hidden = true;
+    $("end-save").textContent = "End camp";
+  }
 }
 
 async function submitEnd(ev) {
@@ -941,6 +1030,13 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   $("entry-form").addEventListener("submit", submitEntry);
+  $("open-weigh-in").addEventListener("click", openWeighIn);
+
+  // Editing the date or weight retracts a pending overwrite confirmation.
+  $("entry-date").addEventListener("input", resetOverwrite);
+  $("entry-weight").addEventListener("input", resetOverwrite);
+
+  $("end-form-date").addEventListener("input", updateEndWarning);
   $("camp-form").addEventListener("submit", submitCamp);
   $("end-form").addEventListener("submit", submitEnd);
   $("detail-delete").addEventListener("click", deleteCamp);
@@ -978,14 +1074,6 @@ document.addEventListener("DOMContentLoaded", () => {
     currentRange = btn.dataset.range;
     loadData();
   });
-
-  $("alpha").addEventListener("input", (ev) => {
-    $("alpha-out").textContent = Number(ev.target.value).toFixed(2);
-  });
-  $("alpha").addEventListener("change", loadData);
-
-  $("entry-date").value = todayISO();
-  $("alpha-out").textContent = Number($("alpha").value).toFixed(2);
 
   loadData();
 });

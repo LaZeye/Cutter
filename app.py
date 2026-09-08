@@ -9,6 +9,9 @@ from modules import analytics, db
 app = Flask(__name__)
 db.init_db()
 
+# Smoothing is tuned once here rather than left to the reader to fiddle with.
+DEFAULT_ALPHA = 0.32
+
 
 def parse_iso(value, label):
     """Returns (date, error_response). Blank values are an error."""
@@ -30,12 +33,7 @@ def index():
 def api_data():
     """Everything the dashboard needs, in one round trip."""
     settings = db.get_settings()
-
-    try:
-        alpha = float(request.args.get("alpha", settings.get("alpha", 0.10)))
-    except (TypeError, ValueError):
-        alpha = 0.10
-    alpha = min(max(alpha, 0.01), 0.9)
+    alpha = DEFAULT_ALPHA
 
     range_key = request.args.get("range", "3m")
     if range_key not in analytics.RANGES:
@@ -92,9 +90,21 @@ def api_add_entry():
     if not 40 <= weight <= 700:
         return jsonify({"error": "That weight is outside the range this tracks."}), 400
 
+    iso = entry_date.isoformat()
+
+    # One weigh-in per day. A second entry for the same date has to be
+    # confirmed, so a mistyped date can't silently replace a real reading.
+    existing = db.get_entry(iso)
+    if existing and not payload.get("overwrite"):
+        return jsonify({
+            "error": "duplicate",
+            "message": "There is already a weigh-in saved for that date.",
+            "existing": existing,
+        }), 409
+
     note = (payload.get("note") or "").strip() or None
-    db.upsert_entry(entry_date.isoformat(), weight, note)
-    return jsonify({"ok": True, "date": entry_date.isoformat(), "weight": weight})
+    db.upsert_entry(iso, weight, note)
+    return jsonify({"ok": True, "date": iso, "weight": weight, "replaced": bool(existing)})
 
 
 @app.route("/api/entries/<entry_date>", methods=["DELETE"])
@@ -183,11 +193,20 @@ def api_end_camp(camp_id):
     if err:
         return err
 
-    if ended_on.isoformat() < camp["start_date"]:
+    iso = ended_on.isoformat()
+
+    if iso < camp["start_date"]:
         return jsonify({"error": "A camp cannot end before it started."}), 400
 
-    db.end_camp(camp_id, ended_on.isoformat())
-    return jsonify({"ok": True})
+    # A camp closed before its fight date never really happened, so it is
+    # discarded rather than filed in the history. The weigh-ins stay: they
+    # belong to the general log, not to the camp.
+    if iso < camp["fight_date"]:
+        db.delete_camp(camp_id)
+        return jsonify({"ok": True, "discarded": True})
+
+    db.end_camp(camp_id, iso)
+    return jsonify({"ok": True, "discarded": False})
 
 
 @app.route("/api/camps/<int:camp_id>/reopen", methods=["POST"])
@@ -207,16 +226,7 @@ def api_camp_detail(camp_id):
     if not camp:
         return jsonify({"error": "That camp no longer exists."}), 404
 
-    settings = db.get_settings()
-    try:
-        alpha = float(request.args.get("alpha", settings.get("alpha", 0.10)))
-    except (TypeError, ValueError):
-        alpha = 0.10
-
-    entries = db.list_entries()
-    alpha = min(max(alpha, 0.01), 0.9)
-
-    return jsonify(analytics.camp_detail(entries, camp, alpha))
+    return jsonify(analytics.camp_detail(db.list_entries(), camp, DEFAULT_ALPHA))
 
 
 @app.route("/api/camps/<int:camp_id>", methods=["DELETE"])
